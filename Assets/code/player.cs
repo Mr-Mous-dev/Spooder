@@ -12,12 +12,19 @@ public class player : MonoBehaviour
     InputAction moveAction;
     InputAction sprintAction;
     InputAction jumpAction;
+    InputAction slideAction;
 
     Vector2 moveInput = Vector2.zero;
 
     [Header("Visuals / Animation")]
     public Transform visualModel; // child model to visually rotate (keep physics upright)
     public Animator animator; // optional Animator (Mixamo)
+    public string slideAnimationState = "Running Slide";
+
+    [Header("Slide")]
+    public float slideColliderY = 0.5f;
+    public float slideDuration = 0.7f;
+    public float slideEndBlend = 0.2f;
 
     [Header("Movement")]
     public float moveSpeed = 5f;
@@ -31,20 +38,26 @@ public class player : MonoBehaviour
 
     [Header("Jump")]
     public float jumpForce = 5f;
-    public float groundCheckDistance = 0.55f;
+    public float groundCheckDistance = 0.02f;
     public LayerMask groundMask = ~0;
 
     Rigidbody rb;
     float h, v;
     bool sprint;
     bool jumpQueued;
+    bool slidePressedThisFrame;
+    bool slideRequested;
+    bool isSliding;
+    float slideTimer;
     bool isGrounded;
+    CapsuleCollider capsuleCollider;
+    BoxCollider boxCollider;
+    Vector3 normalCapsuleCenter;
+    Vector3 normalBoxCenter;
     float sphereRadius = 0.5f;
     bool hasSpeedParameter;
     bool hasGroundedParameter;
     bool hasJumpParameter;
-    bool hasFallRollLeftParameter;
-    bool hasFallRollRightParameter;
     string groundedParameterName;
 
     void Start()
@@ -68,8 +81,6 @@ public class player : MonoBehaviour
                     groundedParameterName = parameter.name;
                 }
                 hasJumpParameter |= parameter.name == "Jump" && parameter.type == AnimatorControllerParameterType.Float;
-                hasFallRollLeftParameter |= parameter.name == "FallRollL" && parameter.type == AnimatorControllerParameterType.Float;
-                hasFallRollRightParameter |= parameter.name == "FallRollR" && parameter.type == AnimatorControllerParameterType.Float;
             }
         }
 
@@ -83,6 +94,18 @@ public class player : MonoBehaviour
         var sc = GetComponent<SphereCollider>();
         if (sc != null)
             sphereRadius = Mathf.Max(0.01f, sc.radius * Mathf.Max(transform.localScale.x, transform.localScale.y));
+
+        capsuleCollider = GetComponent<CapsuleCollider>();
+        if (capsuleCollider == null)
+            capsuleCollider = GetComponentInChildren<CapsuleCollider>();
+        if (capsuleCollider != null)
+            normalCapsuleCenter = capsuleCollider.center;
+
+        boxCollider = GetComponent<BoxCollider>();
+        if (boxCollider == null)
+            boxCollider = GetComponentInChildren<BoxCollider>();
+        if (boxCollider != null && capsuleCollider == null)
+            normalBoxCenter = boxCollider.center;
 
         SetupInputActions();
 
@@ -107,7 +130,8 @@ public class player : MonoBehaviour
         }
 
         if (sprintAction != null)
-            sprint = sprintAction.ReadValue<float>() > 0.5f;
+            sprint = sprintAction.ReadValue<float>() > 0.5f ||
+                (Keyboard.current != null && Keyboard.current.leftShiftKey.isPressed);
         else
             sprint = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
 
@@ -120,6 +144,19 @@ public class player : MonoBehaviour
         {
             jumpQueued = true;
         }
+
+        if (slideAction != null)
+        {
+            bool keyboardSlidePressed = Keyboard.current != null && Keyboard.current.cKey.wasPressedThisFrame;
+            slidePressedThisFrame = slideAction.WasPressedThisFrame() || keyboardSlidePressed;
+        }
+        else
+        {
+            slidePressedThisFrame = Keyboard.current != null && Keyboard.current.cKey.wasPressedThisFrame;
+        }
+
+        if (slidePressedThisFrame)
+            slideRequested = isGrounded;
     }
 
     void FixedUpdate()
@@ -141,7 +178,38 @@ public class player : MonoBehaviour
         if (move.sqrMagnitude > 1f)
             move.Normalize();
 
-        float speed = moveSpeed * (sprint ? sprintMultiplier : 1f);
+        bool canStartSlide = isGrounded;
+        if (!isSliding && slideRequested && canStartSlide)
+        {
+            isSliding = true;
+            slideRequested = false;
+            slideTimer = Mathf.Max(0.05f, slideDuration);
+            SetCapsuleSliding(true);
+            if (animator != null)
+            {
+                string stateName = slideAnimationState;
+                if (!animator.HasState(0, Animator.StringToHash(stateName)))
+                    stateName = "Running Slide";
+
+                if (animator.HasState(0, Animator.StringToHash(stateName)))
+                    animator.Play(stateName, 0, 0f);
+            }
+        }
+        else if (isSliding)
+        {
+            slideTimer -= Time.fixedDeltaTime;
+            if (slideTimer <= 0f)
+            {
+                isSliding = false;
+                SetCapsuleSliding(false);
+                StopSlideAnimation(move);
+            }
+        }
+
+        bool sprinting = sprint && !isSliding && move.sqrMagnitude > 0.01f;
+        float speed = moveSpeed * (sprinting ? sprintMultiplier : 1f);
+        if (isSliding)
+            speed *= 1.35f;
         Vector3 desiredVelocity = new Vector3(move.x, 0f, move.z) * speed;
         desiredVelocity.y = rb.linearVelocity.y;
 
@@ -167,7 +235,7 @@ public class player : MonoBehaviour
             }
         }
 
-        if (jumpQueued && isGrounded)
+        if (jumpQueued && isGrounded && !isSliding)
         {
             rb.linearVelocity = new Vector3(rb.linearVelocity.x, jumpForce, rb.linearVelocity.z);
             isGrounded = false;
@@ -184,7 +252,7 @@ public class player : MonoBehaviour
             jumpQueued = false;
         }
 
-        if (visualModel != null)
+        if (visualModel != null && animator == null && isGrounded)
         {
             Vector3 flatVel = new Vector3(rb.linearVelocity.x, 0f, rb.linearVelocity.z);
             float vMag = flatVel.magnitude;
@@ -200,7 +268,7 @@ public class player : MonoBehaviour
         {
             if (hasSpeedParameter)
             {
-                float inputSpeed = moveInput.magnitude * (sprint ? sprintMultiplier : 1f);
+                float inputSpeed = moveInput.magnitude * (sprinting ? sprintMultiplier : 1f);
                 animator.SetFloat("Speed", Mathf.Clamp01(inputSpeed));
             }
 
@@ -209,30 +277,58 @@ public class player : MonoBehaviour
 
             if (hasJumpParameter)
                 animator.SetFloat("Jump", isGrounded ? 0f : 0.1f);
-
-            if (hasFallRollLeftParameter)
-                animator.SetFloat("FallRollL", !isGrounded && h < -0.1f ? 0.1f : 0f);
-
-            if (hasFallRollRightParameter)
-                animator.SetFloat("FallRollR", !isGrounded && h > 0.1f ? 0.1f : 0f);
         }
+    }
+
+    void SetCapsuleSliding(bool sliding)
+    {
+        if (capsuleCollider != null)
+        {
+            if (sliding)
+                capsuleCollider.center = new Vector3(normalCapsuleCenter.x, slideColliderY, normalCapsuleCenter.z);
+            else
+                capsuleCollider.center = normalCapsuleCenter;
+        }
+        else if (boxCollider != null)
+        {
+            if (sliding)
+                boxCollider.center = new Vector3(normalBoxCenter.x, slideColliderY, normalBoxCenter.z);
+            else
+                boxCollider.center = normalBoxCenter;
+        }
+
+        Physics.SyncTransforms();
+    }
+
+    void StopSlideAnimation(Vector3 move)
+    {
+        if (animator == null)
+            return;
+
+        string stateName = move.sqrMagnitude > 0.01f ? "Walking" : "Standing Idle";
+        if (animator.HasState(0, Animator.StringToHash(stateName)))
+            animator.CrossFadeInFixedTime(stateName, Mathf.Max(0.05f, slideEndBlend), 0, 0f);
     }
 
     void CheckGround()
     {
-        Collider ownCollider = GetComponent<Collider>();
+        Collider ownCollider = capsuleCollider != null ? capsuleCollider : boxCollider;
+        if (ownCollider == null)
+            ownCollider = GetComponent<Collider>();
+        if (ownCollider == null)
+            ownCollider = GetComponentInChildren<Collider>();
+
         if (ownCollider == null || rb.linearVelocity.y > 0.1f)
         {
             isGrounded = false;
             return;
         }
 
-        Vector3 origin = ownCollider.bounds.center;
-        float castRadius = Mathf.Min(0.14f, ownCollider.bounds.extents.y * 0.5f);
-        float castDistance = ownCollider.bounds.extents.y + groundCheckDistance;
-        RaycastHit[] hits = Physics.SphereCastAll(
+        Bounds bounds = ownCollider.bounds;
+        Vector3 origin = new Vector3(bounds.center.x, bounds.min.y + 0.01f, bounds.center.z);
+        float castDistance = 0.01f + Mathf.Min(groundCheckDistance, 0.03f);
+        RaycastHit[] hits = Physics.RaycastAll(
             origin,
-            Mathf.Max(0.01f, castRadius),
             Vector3.down,
             castDistance,
             groundMask,
@@ -259,6 +355,7 @@ public class player : MonoBehaviour
         moveAction = map.FindAction("Move", true);
         sprintAction = map.FindAction("Sprint", false);
         jumpAction = map.FindAction("Jump", false);
+        slideAction = map.FindAction("Crouch", false);
 
         if (moveAction != null) moveAction.Enable();
         if (sprintAction != null) sprintAction.Enable();
@@ -266,6 +363,8 @@ public class player : MonoBehaviour
         {
             jumpAction.Enable();
         }
+        if (slideAction != null)
+            slideAction.Enable();
     }
 
     public bool AddItem(string itemName)
