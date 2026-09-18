@@ -59,6 +59,7 @@ public class player : MonoBehaviour
     bool hasGroundedParameter;
     bool hasJumpParameter;
     string groundedParameterName;
+    bool wasSprinting;
 
     void Start()
     {
@@ -206,7 +207,17 @@ public class player : MonoBehaviour
             }
         }
 
-        bool sprinting = sprint && !isSliding && move.sqrMagnitude > 0.01f;
+        bool sprinting = sprint && isGrounded && !isSliding && move.sqrMagnitude > 0.01f;
+        if (animator != null && sprinting != wasSprinting)
+        {
+            if (sprinting && animator.HasState(0, Animator.StringToHash("Sprinting")))
+                animator.CrossFadeInFixedTime("Sprinting", 0.15f, 0, 0f);
+            else if (!isSliding)
+                StopSlideAnimation(move);
+
+            wasSprinting = sprinting;
+        }
+
         float speed = moveSpeed * (sprinting ? sprintMultiplier : 1f);
         if (isSliding)
             speed *= 1.35f;
