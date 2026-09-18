@@ -43,6 +43,9 @@ public class player : MonoBehaviour
     bool hasSpeedParameter;
     bool hasGroundedParameter;
     bool hasJumpParameter;
+    bool hasFallRollLeftParameter;
+    bool hasFallRollRightParameter;
+    string groundedParameterName;
 
     void Start()
     {
@@ -59,8 +62,14 @@ public class player : MonoBehaviour
             foreach (AnimatorControllerParameter parameter in animator.parameters)
             {
                 hasSpeedParameter |= parameter.name == "Speed";
-                hasGroundedParameter |= parameter.name == "IsGrounded";
-                hasJumpParameter |= parameter.name == "Jump";
+                if (parameter.name == "IsGrounded" || parameter.name == "isGrounded")
+                {
+                    hasGroundedParameter = true;
+                    groundedParameterName = parameter.name;
+                }
+                hasJumpParameter |= parameter.name == "Jump" && parameter.type == AnimatorControllerParameterType.Float;
+                hasFallRollLeftParameter |= parameter.name == "FallRollL" && parameter.type == AnimatorControllerParameterType.Float;
+                hasFallRollRightParameter |= parameter.name == "FallRollR" && parameter.type == AnimatorControllerParameterType.Float;
             }
         }
 
@@ -163,8 +172,12 @@ public class player : MonoBehaviour
             rb.linearVelocity = new Vector3(rb.linearVelocity.x, jumpForce, rb.linearVelocity.z);
             isGrounded = false;
             jumpQueued = false;
+
             if (animator != null && hasJumpParameter)
-                animator.SetTrigger("Jump");
+            {
+                animator.SetFloat("Jump", 0.1f);
+                animator.Play("Jumping", 0, 0f);
+            }
         }
         else
         {
@@ -192,28 +205,43 @@ public class player : MonoBehaviour
             }
 
             if (hasGroundedParameter)
-                animator.SetBool("IsGrounded", isGrounded);
+                animator.SetBool(groundedParameterName, isGrounded);
+
+            if (hasJumpParameter)
+                animator.SetFloat("Jump", isGrounded ? 0f : 0.1f);
+
+            if (hasFallRollLeftParameter)
+                animator.SetFloat("FallRollL", !isGrounded && h < -0.1f ? 0.1f : 0f);
+
+            if (hasFallRollRightParameter)
+                animator.SetFloat("FallRollR", !isGrounded && h > 0.1f ? 0.1f : 0f);
         }
     }
 
     void CheckGround()
     {
         Collider ownCollider = GetComponent<Collider>();
-        if (rb.linearVelocity.y > 0.1f)
+        if (ownCollider == null || rb.linearVelocity.y > 0.1f)
         {
             isGrounded = false;
             return;
         }
 
-        Vector3 footPosition = ownCollider != null
-            ? new Vector3(ownCollider.bounds.center.x, ownCollider.bounds.min.y + 0.08f, ownCollider.bounds.center.z)
-            : transform.position + Vector3.down * 0.5f;
-        Collider[] hits = Physics.OverlapSphere(footPosition, 0.14f, groundMask, QueryTriggerInteraction.Ignore);
+        Vector3 origin = ownCollider.bounds.center;
+        float castRadius = Mathf.Min(0.14f, ownCollider.bounds.extents.y * 0.5f);
+        float castDistance = ownCollider.bounds.extents.y + groundCheckDistance;
+        RaycastHit[] hits = Physics.SphereCastAll(
+            origin,
+            Mathf.Max(0.01f, castRadius),
+            Vector3.down,
+            castDistance,
+            groundMask,
+            QueryTriggerInteraction.Ignore);
 
         isGrounded = false;
-        foreach (Collider hit in hits)
+        foreach (RaycastHit hit in hits)
         {
-            if (hit != ownCollider && !hit.transform.IsChildOf(transform))
+            if (hit.rigidbody != rb && !hit.transform.IsChildOf(transform))
             {
                 isGrounded = true;
                 break;
